@@ -1,13 +1,13 @@
 # app_52item_assessment_embedded.py
 # -*- coding: utf-8 -*-
 """
-52문항 설문 → 4요인 계산 → (코드에 내장된) ND 기준으로 표준화 → 0–100 점수 및 임상군 근접도 보고
-+ PDF 리포트 다운로드, 세션 저장/불러오기, (관리자) 기준 추출 도우미
+Streamlit Cloud-ready
+- 52문항 설문 → 4요인 계산 → (코드 내장 ND 기준) 표준화 → 0–100 점수 & 임상군 근접도
+- 레이더 그래프: Z → 0–100 환산값으로 표시
+- 요인명 단순화: 1=사회적 의사소통, 2=사회적 인식, 3=사회적 동기, 4=언어적 사회인지
+- PDF 다운로드, 응답 JSON 저장/불러오기, (관리자) 기준 추출 도우미
 
-※ 이 버전은 참조 엑셀 업로드 없이도 동작합니다.
-   ND 평균/표준편차, 임상군(Z) 중심값을 아래 상수에 하드코딩하세요.
-
-필수 패키지 (requirements.txt):
+requirements.txt 예시:
   streamlit
   pandas
   numpy
@@ -16,10 +16,7 @@
   reportlab
   kaleido
 
-폰트(한글 PDF): 저장소에 fonts/NanumGothic.ttf 추가 권장
-
-실행:
-  streamlit run app_52item_assessment_embedded.py
+폰트(한글 PDF용): fonts/NanumGothic.ttf (repo에 포함 권장)
 """
 
 import io, os, json
@@ -45,32 +42,20 @@ FACTOR_ITEMS = {
     "Factor3": ["P08","P10","P15","P18","P21","P25","P26","P29","P34","P40"],
     "Factor4": ["P03","P20","P32"],
 }
+# 요인명 단순화 (요청 반영)
 FACTOR_TITLES = {
-    "Factor1": "사회적 의사소통 및 반복행동",
-    "Factor2": "사회적 인식 및 상호작용 조절",
-    "Factor3": "사회적 동기 및 정서표현",
+    "Factor1": "사회적 의사소통",
+    "Factor2": "사회적 인식",
+    "Factor3": "사회적 동기",
     "Factor4": "언어적 사회인지",
 }
+FACTOR_ORDER = ["Factor1","Factor2","Factor3","Factor4"]
 ALL_P = [f"P{str(i).zfill(2)}" for i in range(1,53)]
 CLINICAL_GROUPS = ["ND","ASD","ADHD","SCD","HR"]
 
-# ---------------------------- ⛳ 내장 기준값 (여기를 채우세요) ----------------------------
-# ND 집단의 요인 평균/표준편차 (요인 점수는 '요인에 포함된 P문항 평균')
-# 예시값은 자리표시자입니다. 실제 연구 데이터로 계산한 값을 아래에 덮어쓰세요.
-ND_BASE_MEAN = {
-    "Factor1": 2.50,
-    "Factor2": 2.12,
-    "Factor3": 2.59,
-    "Factor4": 3.09,
-}
-ND_BASE_STD = {
-    "Factor1": 0.58,
-    "Factor2": 0.74,
-    "Factor3": 0.70,
-    "Factor4": 1.01,
-}
-# 각 임상군의 Z-공간 상 '요인별 중심값(centroid)' — ND 기준으로 표준화된 평균 벡터
-# 예시값(가짜). 실제 참조 데이터로 계산한 Z 평균을 대입하세요.
+# ---------------------------- ⛳ 내장 기준값 (여기를 실제 값으로 교체하세요) ----------------------------
+ND_BASE_MEAN = {"Factor1": 2.50,"Factor2": 2.12,"Factor3": 2.59,"Factor4": 3.09}
+ND_BASE_STD = {"Factor1": 0.58,"Factor2": 0.74,"Factor3": 0.70,"Factor4": 1.01}
 GROUP_CENTROIDS_Z = {
     "ND"  : {"Factor1": 0.0,  "Factor2": 0.0,  "Factor3": 0.0,  "Factor4": 0.0},
     "ASD" : {"Factor1": 2.29,  "Factor2": 0.93, "Factor3": 0.86, "Factor4": 1.05},
@@ -149,7 +134,7 @@ def compute_factor_index(P_frame: pd.DataFrame, thresh_ratio: float = 0.5):
 
 def z_from_embedded(idx_row: pd.Series) -> pd.Series:
     z = {}
-    for f in FACTOR_ITEMS.keys():
+    for f in FACTOR_ORDER:
         m = ND_BASE_MEAN.get(f)
         s = ND_BASE_STD.get(f)
         val = idx_row.get(f)
@@ -162,7 +147,7 @@ def tscore_from_z(z):
 def distance_similarity(subject_z: pd.Series, cents: dict):
     dists = {}
     for g, c in cents.items():
-        cols = [f for f in FACTOR_ITEMS.keys() if pd.notna(subject_z.get(f)) and (f in c) and pd.notna(c[f])]
+        cols = [f for f in FACTOR_ORDER if pd.notna(subject_z.get(f)) and (f in c) and pd.notna(c[f])]
         if not cols:
             dists[g] = np.nan
             continue
@@ -229,6 +214,11 @@ idx_subj = compute_factor_index(P_subj, thresh_ratio=0.5).iloc[0]
 subj_z = z_from_embedded(idx_subj)
 subj_t = tscore_from_z(subj_z)
 
+# 요인 표시용 라벨(0–100/그래프에서 사용)
+labels = [FACTOR_TITLES[f] for f in FACTOR_ORDER]
+subj_t_display = pd.Series([subj_t.get(f) for f in FACTOR_ORDER], index=labels)
+subj_z_display = pd.Series([subj_z.get(f) for f in FACTOR_ORDER], index=labels)
+
 D, S = distance_similarity(subj_z, GROUP_CENTROIDS_Z)
 closest = None
 finite_d = {k:v for k,v in D.items() if np.isfinite(v)}
@@ -254,7 +244,7 @@ def interpret_factor(zval: float, name: str):
     else:
         return f"{name}: 매우 낮은 편 (하위≈7%)"
 
-interp_lines = [interpret_factor(subj_z.get(f), FACTOR_TITLES[f]+f" ({f})") for f in FACTOR_ITEMS.keys()]
+interp_lines = [interpret_factor(subj_z_display.get(FACTOR_TITLES[f]), FACTOR_TITLES[f]) for f in FACTOR_ORDER]
 if closest:
     interp_lines.append(f"임상군 근접도: 가장 가까운 집단은 **{closest}** 입니다.")
 
@@ -263,28 +253,40 @@ left, mid, right = st.columns([1.1, 1.1, 0.9])
 with left:
     st.subheader("📊 요인 점수 (0–100)")
     fig_bar = go.Figure()
-    fig_bar.add_trace(go.Bar(x=list(subj_t.index), y=[None if pd.isna(v) else v for v in subj_t.values], text=["" if pd.isna(v) else f"{v:.1f}" for v in subj_t.values], textposition="outside"))
+    yvals = [None if pd.isna(v) else v for v in subj_t_display.values]
+    fig_bar.add_trace(go.Bar(x=list(subj_t_display.index), y=yvals,
+                             text=["" if pd.isna(v) else f"{v:.1f}" for v in subj_t_display.values],
+                             textposition="outside"))
     fig_bar.update_yaxes(range=[0,100])
     fig_bar.update_layout(height=420, margin=dict(l=20,r=20,t=30,b=20))
     st.plotly_chart(fig_bar, use_container_width=True)
 
 with mid:
-    st.subheader("🕸️ 레이더 (Z)")
-    zmask = subj_z.dropna()
-    if not zmask.empty:
-        cats = list(zmask.index)
-        vals = list(zmask.values) + [zmask.values[0]]
+    st.subheader("🕸️ 레이더 (0–100)")
+    tmask = subj_t_display.dropna()
+    if not tmask.empty:
+        cats = list(tmask.index)
+        vals = list(tmask.values) + [tmask.values[0]]
         catsc = cats + [cats[0]]
         fig_rad = go.Figure()
-        fig_rad.add_trace(go.Scatterpolar(r=vals, theta=catsc, fill='toself', name='Subject(Z)'))
+        # 본인 점수(0–100)
+        fig_rad.add_trace(go.Scatterpolar(r=vals, theta=catsc, fill='toself', name='Subject(0–100)'))
+        # 가장 가까운 집단 중심(0–100 변환) 표시
         if closest and GROUP_CENTROIDS_Z.get(closest) is not None:
-            cen = np.array([GROUP_CENTROIDS_Z[closest][c] for c in cats])
-            fig_rad.add_trace(go.Scatterpolar(r=list(cen)+[cen[0]], theta=catsc, name=f'{closest} centroid(Z)'))
-        fig_rad.update_layout(height=420, margin=dict(l=20,r=20,t=30,b=20), polar=dict(radialaxis=dict(visible=True)))
+            cen_z = np.array([GROUP_CENTROIDS_Z[closest][f] for f in FACTOR_ORDER])
+            cen_t = np.clip(50 + 10*cen_z, 0, 100)
+            # tmask의 순서/항목에 맞춤
+            cen_map = {FACTOR_TITLES[f]: cen_t[i] for i,f in enumerate(FACTOR_ORDER)}
+            cen_vals = [cen_map[c] for c in cats] + [cen_map[cats[0]]]
+            fig_rad.add_trace(go.Scatterpolar(r=cen_vals, theta=catsc, name=f'{closest} centroid(0–100)'))
+        fig_rad.update_layout(
+            height=420, margin=dict(l=20,r=20,t=30,b=20),
+            polar=dict(radialaxis=dict(visible=True, range=[0,100], tick0=0, dtick=10))
+        )
         st.plotly_chart(fig_rad, use_container_width=True)
     else:
         fig_rad = None
-        st.info("레이더를 그릴 유효한 Z 점수가 없습니다.")
+        st.info("레이더를 그릴 유효한 점수가 없습니다.")
 
 with right:
     st.subheader("🎯 임상군 근접도")
@@ -302,10 +304,7 @@ st.markdown("---")
 st.subheader("📤 결과 리포트 PDF 다운로드")
 
 # 폰트 등록 (한글)
-FONT_PATHS = [
-    "fonts/NanumGothic.ttf",
-    "/System/Library/Fonts/AppleSDGothicNeo.ttc"
-]
+FONT_PATHS = ["fonts/NanumGothic.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc"]
 FONT_NAME = None
 for fp in FONT_PATHS:
     try:
@@ -326,6 +325,8 @@ def fig_to_png_bytes(fig):
 if st.button("PDF 생성 및 다운로드"):
     try:
         bar_png = fig_to_png_bytes(fig_bar)
+        # 레이더는 0–100 버전 사용
+        # Streamlit 내 fig_rad 변수를 그대로 활용
         rad_png = fig_to_png_bytes(fig_rad)
         pdf_buffer = io.BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=A4)
@@ -344,7 +345,7 @@ if st.button("PDF 생성 및 다운로드"):
             img1 = ImageReader(io.BytesIO(bar_png))
             c.drawImage(img1, 40, 200, width=W-80, height=H-300, preserveAspectRatio=True, mask='auto')
         if rad_png:
-            c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "레이더 (Z)")
+            c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "레이더 (0–100)")
             img2 = ImageReader(io.BytesIO(rad_png))
             c.drawImage(img2, 80, 180, width=W-160, height=H-320, preserveAspectRatio=True, mask='auto')
         c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "임상군 근접도")
@@ -378,7 +379,6 @@ with st.expander("🔧 관리자: 기준값 추출 도우미 (선택) "):
                 is_nd = (diag == "ND")
                 base_mean = idx.loc[is_nd].mean().round(4).to_dict()
                 base_std  = idx.loc[is_nd].std(ddof=0).replace(0, np.nan).round(4).to_dict()
-                # Z로 표준화
                 Z = (idx - idx.loc[is_nd].mean()) / idx.loc[is_nd].std(ddof=0).replace(0, np.nan)
                 cents = {}
                 for g in [g for g in CLINICAL_GROUPS if g in diag.unique()]:
