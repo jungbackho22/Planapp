@@ -1,48 +1,42 @@
-# app_52item_assessment.py
+# app_52item_assessment_embedded.py
 # -*- coding: utf-8 -*-
 """
-52문항 응답 → 4요인 계산 → 선택 기준선(예: ND) 표준화 → 0–100 점수/군집근접도 → 
-PDF 리포트 다운로드 + 52문항 세션 저장/불러오기 + 자동 해석문 생성
+52문항 설문 → 4요인 계산 → (코드에 내장된) ND 기준으로 표준화 → 0–100 점수 및 임상군 근접도 보고
++ PDF 리포트 다운로드, 세션 저장/불러오기, (관리자) 기준 추출 도우미
 
-배포: Streamlit Community Cloud 권장
-필수: requirements.txt 에 아래 포함
+※ 이 버전은 참조 엑셀 업로드 없이도 동작합니다.
+   ND 평균/표준편차, 임상군(Z) 중심값을 아래 상수에 하드코딩하세요.
+
+필수 패키지 (requirements.txt):
   streamlit
   pandas
   numpy
   plotly
-  openpyxl
   scikit-learn
   reportlab
   kaleido
 
-폰트(한글 PDF 대응):
-- 리포트랩(reportlab)에서 한글을 위해 TTF 등록이 필요합니다.
-- 저장소에 fonts/NanumGothic.ttf 를 포함해 주세요. 없으면 시스템 폰트로 대체합니다.
+폰트(한글 PDF): 저장소에 fonts/NanumGothic.ttf 추가 권장
 
 실행:
-  streamlit run app_52item_assessment.py
+  streamlit run app_52item_assessment_embedded.py
 """
 
-import io
-import os
-import json
+import io, os, json
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from sklearn.preprocessing import StandardScaler
-
-# PDF (reportlab) & 이미지 내보내기(kaleido)
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# ---------------------------- 페이지 설정 ----------------------------
-st.set_page_config(page_title="52문항 요인 평가", layout="wide")
-st.title("🧠 52문항 기반 요인 평가 · ND 표준화 리포트")
-st.caption("참조 데이터로 기준선을 정한 뒤, 응답자의 위치와 0–100 점수 및 임상군 근접도를 제공합니다.")
+# ---------------------------- 페이지/테마 ----------------------------
+st.set_page_config(page_title="52문항 요인 평가 (ND 내장판)", layout="wide")
+st.title("🧠 52문항 기반 요인 평가 · ND 표준화 (내장판)")
+st.caption("ND 기준과 임상군 중심을 코드에 고정하여, 업로드 없이 즉시 평가합니다.")
 
 # ---------------------------- 요인/문항 정의 ----------------------------
 FACTOR_ITEMS = {
@@ -60,6 +54,32 @@ FACTOR_TITLES = {
 ALL_P = [f"P{str(i).zfill(2)}" for i in range(1,53)]
 CLINICAL_GROUPS = ["ND","ASD","ADHD","SCD","HR"]
 
+# ---------------------------- ⛳ 내장 기준값 (여기를 채우세요) ----------------------------
+# ND 집단의 요인 평균/표준편차 (요인 점수는 '요인에 포함된 P문항 평균')
+# 예시값은 자리표시자입니다. 실제 연구 데이터로 계산한 값을 아래에 덮어쓰세요.
+ND_BASE_MEAN = {
+    "Factor1": 3.0,
+    "Factor2": 3.2,
+    "Factor3": 3.1,
+    "Factor4": 3.0,
+}
+ND_BASE_STD = {
+    "Factor1": 0.6,
+    "Factor2": 0.5,
+    "Factor3": 0.5,
+    "Factor4": 0.4,
+}
+# 각 임상군의 Z-공간 상 '요인별 중심값(centroid)' — ND 기준으로 표준화된 평균 벡터
+# 예시값(가짜). 실제 참조 데이터로 계산한 Z 평균을 대입하세요.
+GROUP_CENTROIDS_Z = {
+    "ND"  : {"Factor1": 0.0,  "Factor2": 0.0,  "Factor3": 0.0,  "Factor4": 0.0},
+    "ASD" : {"Factor1": 1.1,  "Factor2": -0.6, "Factor3": -0.2, "Factor4": -0.4},
+    "ADHD": {"Factor1": 0.4,  "Factor2": -0.2, "Factor3": 0.6,  "Factor4": -0.1},
+    "SCD" : {"Factor1": 0.7,  "Factor2": -1.0, "Factor3": -0.3, "Factor4": -0.8},
+    "HR"  : {"Factor1": 0.3,  "Factor2": -0.1, "Factor3": 0.1,  "Factor4": 0.0},
+}
+
+# ---------------------------- 52문항 텍스트 ----------------------------
 QUESTION_TEXTS = [
     "나는 어른들의 도움 없이도 다른 사람들과 어울리거나 이야기할  수 있다.",
     "모르는 것이 있어도 나는  되도록 다른 사람들에게 물어보지 않는다.",
@@ -127,124 +147,67 @@ def compute_factor_index(P_frame: pd.DataFrame, thresh_ratio: float = 0.5):
         idx[fname] = avg
     return idx
 
-def clean_numeric_series(s: pd.Series) -> pd.Series:
-    if s.dtype.kind in "biufc":
-        return s.astype(float)
-    x = s.astype(str).str.strip()
-    for a,b in {",":"", "%":"", "−":"-", "–":"-", "—":"-", "±":" ", "≥":"", "≤":"", ">":"", "<":"", "=":""}.items():
-        x = x.str.replace(a,b, regex=False)
-    num = x.str.extract(r"([-+]?\d*\.?\d+)")[0]
-    return pd.to_numeric(num, errors="coerce")
+def z_from_embedded(idx_row: pd.Series) -> pd.Series:
+    z = {}
+    for f in FACTOR_ITEMS.keys():
+        m = ND_BASE_MEAN.get(f)
+        s = ND_BASE_STD.get(f)
+        val = idx_row.get(f)
+        z[f] = (val - m) / s if (m is not None and s not in (None, 0) and pd.notna(val)) else np.nan
+    return pd.Series(z)
 
-def clean_numeric_frame(df: pd.DataFrame, cols):
-    out = pd.DataFrame(index=df.index)
-    for c in cols:
-        if c in df.columns:
-            out[c] = clean_numeric_series(df[c])
-    return out
-
-def z_standardize(factor_index: pd.DataFrame, base_mask: pd.Series):
-    base_mean = factor_index.loc[base_mask].mean()
-    base_std  = factor_index.loc[base_mask].std(ddof=0).replace(0, np.nan)
-    Z = (factor_index - base_mean) / base_std
-    return Z, base_mean, base_std
-
-def tscore_from_z(z: pd.Series | pd.DataFrame):
+def tscore_from_z(z):
     return (50 + 10*z).clip(lower=0, upper=100)
-
-def group_centroids(Z: pd.DataFrame, diag: pd.Series, groups):
-    cents = {}
-    for g in groups:
-        mask = (diag == g)
-        cents[g] = Z.loc[mask].mean(skipna=True)
-    return cents
 
 def distance_similarity(subject_z: pd.Series, cents: dict):
     dists = {}
     for g, c in cents.items():
-        cols = subject_z.index[subject_z.notna() & c.notna()]
-        if len(cols) == 0:
-            d = np.nan
-        else:
-            d = np.linalg.norm(subject_z[cols].values - c[cols].values)
-        dists[g] = d
+        cols = [f for f in FACTOR_ITEMS.keys() if pd.notna(subject_z.get(f)) and (f in c) and pd.notna(c[f])]
+        if not cols:
+            dists[g] = np.nan
+            continue
+        sv = np.array([subject_z[f] for f in cols])
+        cv = np.array([c[f] for f in cols])
+        dists[g] = float(np.linalg.norm(sv - cv))
     valid = {k:v for k,v in dists.items() if np.isfinite(v)}
     if not valid:
-        return dists, {k:np.nan for k in dists}, None
+        return dists, {k:np.nan for k in dists}
     vals = np.array(list(valid.values()))
     if np.allclose(vals, 0):
         probs = np.ones_like(vals)/len(vals)
     else:
         logits = -vals; logits -= logits.max(); ex = np.exp(logits); probs = ex/ex.sum()
-    sim = {}
+    sims = {}
     for (k,_), p in zip(valid.items(), probs):
-        sim[k] = float(p)
+        sims[k] = float(p)
     for k in dists.keys():
-        if k not in sim: sim[k] = np.nan
-    return dists, sim, None
+        if k not in sims: sims[k] = np.nan
+    return dists, sims
 
-# ---------------------------- 사이드바: 참조/기준선 ----------------------------
-st.sidebar.header("① 참조 데이터 / 기준선 설정")
-ref_file = st.sidebar.file_uploader("참조 엑셀(.xlsx) — DIAG + P01..P52", type=["xlsx"], key="ref")
-diag_col = st.sidebar.text_input("DIAG 열 이름", value="DIAG")
-base_choice = st.sidebar.selectbox("기준선 레이블 선택 (Z 표준화에 사용)", options=["ND"] + ["사용자 지정"], index=0)
-user_base_label = None
-if base_choice == "사용자 지정":
-    user_base_label = st.sidebar.text_input("기준으로 삼을 DIAG 라벨", value="ND")
-thresh_ratio = st.sidebar.slider("요인 평균 최소 응답비율", 0.3, 1.0, 0.5, 0.1)
-
-# ---------------------------- 참조 데이터 로드 ----------------------------
-ref_loaded = False
-if ref_file is not None:
-    try:
-        df_ref_raw = pd.read_excel(ref_file)
-        if diag_col not in df_ref_raw.columns:
-            st.sidebar.error(f"'{diag_col}' 열이 없습니다.")
-        else:
-            Ps_ref = clean_numeric_frame(df_ref_raw, ALL_P)
-            idx_ref = compute_factor_index(Ps_ref, thresh_ratio=thresh_ratio)
-            diag_ref = df_ref_raw[diag_col].astype(str)
-            base_label = user_base_label if user_base_label else "ND"
-            base_mask = (diag_ref == base_label)
-            if base_mask.sum() < 5:
-                st.sidebar.warning(f"기준선 '{base_label}' 표본이 적습니다(n={base_mask.sum()}).")
-            Z_ref, base_mean, base_std = z_standardize(idx_ref, base_mask)
-            cents = group_centroids(Z_ref, diag_ref, groups=[g for g in CLINICAL_GROUPS if g in diag_ref.unique()])
-            st.sidebar.success("✅ 기준선 계산 완료")
-            ref_loaded = True
-    except Exception as e:
-        st.sidebar.error(f"참조 데이터 로드 오류: {e}")
-
-if not ref_loaded:
-    st.info("좌측에서 참조 데이터를 업로드하고 기준선을 선택해 주세요.")
-    st.stop()
-
-# ---------------------------- 52문항 입력: 세션 저장/불러오기 ----------------------------
-st.sidebar.header("② 응답 저장/불러오기")
-# 초기화
+# ---------------------------- 세션 저장/불러오기 ----------------------------
 if "responses" not in st.session_state:
-    st.session_state["responses"] = {pid: None for pid in ALL_P}
+    st.session_state["responses"] = {pid: 3 for pid in ALL_P}  # 기본값 3
 
-col_json1, col_json2 = st.sidebar.columns(2)
-with col_json1:
-    if st.button("현재 응답 JSON 다운로드"):
+left_s, right_s = st.sidebar.columns(2)
+with left_s:
+    if st.button("응답 JSON 저장"):
         payload = json.dumps(st.session_state["responses"], ensure_ascii=False, indent=2)
         st.download_button("⬇️ responses.json", data=payload.encode("utf-8"), file_name="responses.json", mime="application/json")
-with col_json2:
-    uploaded_json = st.file_uploader("응답 불러오기(JSON)", type=["json"], key="loadjson")
-    if uploaded_json is not None:
+with right_s:
+    up = st.file_uploader("응답 불러오기(JSON)", type=["json"], key="respjson")
+    if up is not None:
         try:
-            data = json.load(uploaded_json)
+            data = json.load(up)
             for k,v in data.items():
                 if k in st.session_state["responses"]:
-                    st.session_state["responses"][k] = v
-            st.sidebar.success("✅ 응답 불러오기 완료")
+                    st.session_state["responses"][k] = int(v)
+            st.success("✅ 응답 불러오기 완료")
         except Exception as e:
-            st.sidebar.error(f"JSON 파싱 실패: {e}")
+            st.error(f"JSON 파싱 실패: {e}")
 
 # ---------------------------- 52문항 폼 ----------------------------
-st.subheader("🧩 52문항 설문 (1~5 Likert, 기본=3)")
-with st.form("qform", clear_on_submit=False):
+st.subheader("🧩 52문항 설문 (1~5 Likert)")
+with st.form("qform"):
     sliders = {}
     cols = st.columns(2)
     for i, q in enumerate(QUESTION_TEXTS, start=1):
@@ -252,36 +215,34 @@ with st.form("qform", clear_on_submit=False):
         col = cols[(i-1)%2]
         with col:
             default_val = st.session_state["responses"].get(pid, 3)
-            if default_val is None: default_val = 3
             sliders[pid] = st.slider(f"{pid}. {q}", 1, 5, int(default_val), 1)
     submitted = st.form_submit_button("결과 계산")
 
 if not submitted:
     st.stop()
 
-# 세션에 저장
 st.session_state["responses"] = sliders.copy()
 
 # ---------------------------- 점수 계산 ----------------------------
 P_subj = pd.DataFrame([sliders])
-idx_subj = compute_factor_index(P_subj, thresh_ratio=thresh_ratio).iloc[0]
-subj_z = (idx_subj - base_mean) / base_std
+idx_subj = compute_factor_index(P_subj, thresh_ratio=0.5).iloc[0]
+subj_z = z_from_embedded(idx_subj)
 subj_t = tscore_from_z(subj_z)
 
-D, S, _ = distance_similarity(subj_z, cents)
+D, S = distance_similarity(subj_z, GROUP_CENTROIDS_Z)
 closest = None
 finite_d = {k:v for k,v in D.items() if np.isfinite(v)}
 if finite_d:
     closest = min(finite_d.items(), key=lambda x:x[1])[0]
 
-# ---------------------------- 자동 해석문 ----------------------------
+# ---------------------------- 자동 해석 ----------------------------
 def interpret_factor(zval: float, name: str):
     if pd.isna(zval):
         return f"{name}: 데이터 부족으로 해석 불가"
     if zval >= 1.5:
-        return f"{name}: 매우 높은 편 (상위 약 7%)"
+        return f"{name}: 매우 높은 편 (상위≈7%)"
     elif zval >= 1.0:
-        return f"{name}: 높은 편 (상위 약 16%)"
+        return f"{name}: 높은 편 (상위≈16%)"
     elif zval >= 0.5:
         return f"{name}: 다소 높은 편"
     elif zval > -0.5:
@@ -289,9 +250,9 @@ def interpret_factor(zval: float, name: str):
     elif zval > -1.0:
         return f"{name}: 다소 낮은 편"
     elif zval > -1.5:
-        return f"{name}: 낮은 편 (하위 약 16%)"
+        return f"{name}: 낮은 편 (하위≈16%)"
     else:
-        return f"{name}: 매우 낮은 편 (하위 약 7%)"
+        return f"{name}: 매우 낮은 편 (하위≈7%)"
 
 interp_lines = [interpret_factor(subj_z.get(f), FACTOR_TITLES[f]+f" ({f})") for f in FACTOR_ITEMS.keys()]
 if closest:
@@ -316,9 +277,8 @@ with mid:
         catsc = cats + [cats[0]]
         fig_rad = go.Figure()
         fig_rad.add_trace(go.Scatterpolar(r=vals, theta=catsc, fill='toself', name='Subject(Z)'))
-        # 가장 가까운 집단 중심 표시
-        if closest and cents.get(closest) is not None:
-            cen = cents[closest][zmask.index].values
+        if closest and GROUP_CENTROIDS_Z.get(closest) is not None:
+            cen = np.array([GROUP_CENTROIDS_Z[closest][c] for c in cats])
             fig_rad.add_trace(go.Scatterpolar(r=list(cen)+[cen[0]], theta=catsc, name=f'{closest} centroid(Z)'))
         fig_rad.update_layout(height=420, margin=dict(l=20,r=20,t=30,b=20), polar=dict(radialaxis=dict(visible=True)))
         st.plotly_chart(fig_rad, use_container_width=True)
@@ -337,14 +297,14 @@ st.markdown("---")
 st.subheader("📝 자동 해석")
 st.markdown("\n".join([f"- {line}" for line in interp_lines]))
 
-# ---------------------------- PDF 리포트 생성 ----------------------------
+# ---------------------------- PDF 리포트 ----------------------------
 st.markdown("---")
 st.subheader("📤 결과 리포트 PDF 다운로드")
 
 # 폰트 등록 (한글)
 FONT_PATHS = [
-    "fonts/NanumGothic.ttf",                     # 저장소 포함 권장
-    "/System/Library/Fonts/AppleSDGothicNeo.ttc" # macOS fallback
+    "fonts/NanumGothic.ttf",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc"
 ]
 FONT_NAME = None
 for fp in FONT_PATHS:
@@ -355,31 +315,23 @@ for fp in FONT_PATHS:
             break
     except Exception:
         continue
-
 if FONT_NAME is None:
-    # 마지막 수단: 기본 폰트(영문). 한글은 이미지로 대체됨.
     FONT_NAME = "Helvetica"
 
-# Plotly → 이미지 버퍼 (kaleido 필요)
 def fig_to_png_bytes(fig):
+    if fig is None:
+        return None
     return fig.to_image(format="png", scale=2)
 
 if st.button("PDF 생성 및 다운로드"):
     try:
-        # 그림 PNG 준비
         bar_png = fig_to_png_bytes(fig_bar)
-        rad_png = fig_to_png_bytes(fig_rad) if fig_rad is not None else None
-
-        # PDF 메모리 버퍼
+        rad_png = fig_to_png_bytes(fig_rad)
         pdf_buffer = io.BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=A4)
         W, H = A4
-
-        # 제목
         c.setFont(FONT_NAME, 16)
-        c.drawString(40, H-60, "52문항 요인 평가 리포트 (ND 표준화)")
-
-        # 요약 텍스트
+        c.drawString(40, H-60, "52문항 요인 평가 리포트 (ND 표준화·내장판)")
         c.setFont(FONT_NAME, 10)
         y = H-90
         for line in interp_lines:
@@ -387,46 +339,63 @@ if st.button("PDF 생성 및 다운로드"):
             y -= 14
             if y < 120:
                 c.showPage(); c.setFont(FONT_NAME, 10); y = H-60
-
-        # 바 차트
-        c.showPage()
-        c.setFont(FONT_NAME, 12)
-        c.drawString(40, H-60, "요인 점수 (0–100)")
-        img1 = ImageReader(io.BytesIO(bar_png))
-        c.drawImage(img1, 40, 200, width=W-80, height=H-300, preserveAspectRatio=True, mask='auto')
-
-        # 레이더
-        if rad_png is not None:
-            c.showPage()
-            c.setFont(FONT_NAME, 12)
-            c.drawString(40, H-60, "레이더 (Z)")
+        c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "요인 점수 (0–100)")
+        if bar_png:
+            img1 = ImageReader(io.BytesIO(bar_png))
+            c.drawImage(img1, 40, 200, width=W-80, height=H-300, preserveAspectRatio=True, mask='auto')
+        if rad_png:
+            c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "레이더 (Z)")
             img2 = ImageReader(io.BytesIO(rad_png))
             c.drawImage(img2, 80, 180, width=W-160, height=H-320, preserveAspectRatio=True, mask='auto')
-
-        # 근접도 표 (텍스트 간략)
         c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "임상군 근접도")
-        c.setFont(FONT_NAME, 10)
-        y = H-90
+        c.setFont(FONT_NAME, 10); y = H-90
         for g in prox_df.index:
             d = prox_df.loc[g, "Distance"]
             s = prox_df.loc[g, "Similarity"]
-            c.drawString(40, y, f"{g}: 거리={d:.3f}  유사도={s:.3f}")
+            d_txt = "NaN" if pd.isna(d) else f"{d:.3f}"
+            s_txt = "NaN" if pd.isna(s) else f"{s:.3f}"
+            c.drawString(40, y, f"{g}: 거리={d_txt}  유사도={s_txt}")
             y -= 14
-
         c.save()
-        pdf_bytes = pdf_buffer.getvalue()
-        st.download_button("⬇️ PDF 다운로드", data=pdf_bytes, file_name="factor_report.pdf", mime="application/pdf")
+        st.download_button("⬇️ PDF 다운로드", data=pdf_buffer.getvalue(), file_name="factor_report_embedded.pdf", mime="application/pdf")
     except Exception as e:
         st.error(f"PDF 생성 실패: {e}")
 
-# ---------------------------- 주의/도움말 ----------------------------
+# ---------------------------- (관리자) 기준 추출 도우미 ----------------------------
+with st.expander("🔧 관리자: 기준값 추출 도우미 (선택) "):
+    st.caption("참조 엑셀을 일시 업로드하여 ND 평균/표준편차와 임상군 Z-중심을 계산하고, 코드로 붙여넣을 딕셔너리를 생성합니다.")
+    up_ref = st.file_uploader("참조 엑셀(.xlsx) – DIAG + P01..P52", type=["xlsx"], key="admref")
+    diag_col = st.text_input("DIAG 열 이름", value="DIAG")
+    if up_ref is not None:
+        try:
+            df = pd.read_excel(up_ref)
+            if diag_col not in df.columns:
+                st.error(f"'{diag_col}' 열이 없습니다.")
+            else:
+                Ps = pd.DataFrame({c: pd.to_numeric(df[c], errors='coerce') for c in ALL_P if c in df.columns})
+                idx = compute_factor_index(Ps, 0.5)
+                diag = df[diag_col].astype(str)
+                is_nd = (diag == "ND")
+                base_mean = idx.loc[is_nd].mean().round(4).to_dict()
+                base_std  = idx.loc[is_nd].std(ddof=0).replace(0, np.nan).round(4).to_dict()
+                # Z로 표준화
+                Z = (idx - idx.loc[is_nd].mean()) / idx.loc[is_nd].std(ddof=0).replace(0, np.nan)
+                cents = {}
+                for g in [g for g in CLINICAL_GROUPS if g in diag.unique()]:
+                    cents[g] = Z.loc[diag==g].mean().round(4).to_dict()
+                st.success("계산 완료 — 아래를 ND_BASE_MEAN / ND_BASE_STD / GROUP_CENTROIDS_Z 에 붙여넣으세요.")
+                st.code(json.dumps(base_mean, ensure_ascii=False, indent=2), language="json")
+                st.code(json.dumps(base_std, ensure_ascii=False, indent=2), language="json")
+                st.code(json.dumps(cents, ensure_ascii=False, indent=2), language="json")
+        except Exception as e:
+            st.error(f"기준 추출 실패: {e}")
+
+# ---------------------------- 도움말 ----------------------------
 st.markdown(
     """
-**설정 메모**  
-- *기준선 선택*: 기본은 ND이나, 사이드바에서 사용자 지정 라벨을 기준으로 표준화를 수행할 수 있습니다.  
-- *0–100 변환*: Score = clip(50 + 10·z, 0, 100).  
-- *근접도*: Z-공간 임상군 centroid와의 유클리드 거리 → softmax(-거리)로 유사도 환산.  
-- *PDF 한글*: 리포트랩은 폰트 임베딩이 필요합니다. 저장소에 **fonts/NanumGothic.ttf** 를 포함하세요.  
-- *세션 저장/불러오기*: 사이드바에서 JSON으로 내보내고 다시 불러올 수 있습니다.  
+**메모**  
+- ND 기준/임상군 중심은 코드 상단의 상수(`ND_BASE_MEAN`, `ND_BASE_STD`, `GROUP_CENTROIDS_Z`)를 실제 값으로 교체하세요.  
+- PDF 한글을 위해 `fonts/NanumGothic.ttf` 포함을 권장합니다(없으면 macOS 기본 폰트로 대체).  
+- 0–100 변환: Score = clip(50 + 10·z, 0, 100).  
 """
 )
