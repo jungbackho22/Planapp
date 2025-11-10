@@ -56,14 +56,14 @@ ALL_P = [f"P{str(i).zfill(2)}" for i in range(1,53)]
 CLINICAL_GROUPS = ["ND","ASD","ADHD","SCD","HR"]
 
 # ---------------------------- ⛳ 내장 기준값 (여기를 실제 값으로 교체하세요) ----------------------------
-ND_BASE_MEAN = {"Factor1": 3.0, "Factor2": 3.2, "Factor3": 3.1, "Factor4": 3.0}
-ND_BASE_STD  = {"Factor1": 0.6, "Factor2": 0.5, "Factor3": 0.5, "Factor4": 0.4}
+ND_BASE_MEAN = {"Factor1": 2.50,"Factor2": 2.12,"Factor3": 2.59,"Factor4": 3.09}
+ND_BASE_STD = {"Factor1": 0.58,"Factor2": 0.74,"Factor3": 0.70,"Factor4": 1.01}
 GROUP_CENTROIDS_Z = {
     "ND"  : {"Factor1": 0.0,  "Factor2": 0.0,  "Factor3": 0.0,  "Factor4": 0.0},
-    "ASD" : {"Factor1": 1.1,  "Factor2": -0.6, "Factor3": -0.2, "Factor4": -0.4},
-    "ADHD": {"Factor1": 0.4,  "Factor2": -0.2, "Factor3": 0.6,  "Factor4": -0.1},
-    "SCD" : {"Factor1": 0.7,  "Factor2": -1.0, "Factor3": -0.3, "Factor4": -0.8},
-    "HR"  : {"Factor1": 0.3,  "Factor2": -0.1, "Factor3": 0.1,  "Factor4": 0.0},
+    "ASD" : {"Factor1": 2.29,  "Factor2": 0.93, "Factor3": 0.86, "Factor4": 1.05},
+    "ADHD": {"Factor1": 1.34,  "Factor2": 0.63, "Factor3": 0.12,  "Factor4": 0.60},
+    "SCD" : {"Factor1": 1.87,  "Factor2": 1.01, "Factor3": 0.71, "Factor4": 0.76},
+    "HR"  : {"Factor1": 1.70,  "Factor2": 0.21, "Factor3": 1.26,  "Factor4": 0.26},
 }
 
 # ---------------------------- 52문항 텍스트 ----------------------------
@@ -215,11 +215,11 @@ def interpret_factor(zval: float, name: str):
     if pd.isna(zval):
         return f"{name}: 데이터 부족으로 해석 불가"
     if zval >= 1.5:
-        return f"{name}: 매우 높은 편 (상위≈7%)"
+        return f"{name}: 매우 위험 개별 교육 필요 (상위≈7%)"
     elif zval >= 1.0:
-        return f"{name}: 높은 편 (상위≈16%)"
+        return f"{name}: 위험 교육 상담 필요 (상위≈16%)"
     elif zval >= 0.5:
-        return f"{name}: 다소 높은 편"
+        return f"{name}: 다소 위험 요관촬"
     elif zval > -0.5:
         return f"{name}: 보통 범위"
     elif zval > -1.0:
@@ -283,7 +283,7 @@ with mid:
         st.info("레이더를 그릴 유효한 점수가 없습니다.")
 
 with right:
-    st.subheader("🎯 임상군 근접도")
+    st.subheader("임상군 근접도")
     D, S = distance_similarity(subj_z, GROUP_CENTROIDS_Z)  # 안전 재계산
     prox_df = pd.DataFrame({"Distance": D, "Similarity": S})
     st.dataframe(prox_df)
@@ -293,7 +293,7 @@ with right:
 st.markdown("---")
 st.subheader("📝 자동 해석")
 st.markdown("
-".join([f"- {line}" for line in interp_lines]))
+.join([f"- {line}" for line in interp_lines])")
 
 # ---------------------------- PDF 리포트 ----------------------------
 st.markdown("---")
@@ -385,12 +385,4 @@ if st.button("PDF 만들기 & 다운로드"):
     except Exception as e:
         st.error(f"PDF 생성 실패: {e}")
 
-# ---------------------------- 도움말 ----------------------------
-st.markdown(
-    """
-**메모**  
-- ND 기준/임상군 중심은 코드 상단의 상수(`ND_BASE_MEAN`, `ND_BASE_STD`, `GROUP_CENTROIDS_Z`)를 실제 값으로 교체하세요.  
-- PDF 한글을 위해 `fonts/NanumGothic.ttf` 포함을 권장합니다(없으면 macOS 기본 폰트로 대체).  
-- 레이더/바 차트는 0–100 기준으로 표현합니다.  
-"""
-)
+
