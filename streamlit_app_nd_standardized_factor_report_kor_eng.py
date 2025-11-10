@@ -1,11 +1,12 @@
 # app_52item_assessment_embedded.py
 # -*- coding: utf-8 -*-
 """
-Streamlit Cloud-ready
+Streamlit Cloud-ready (간결판)
 - 52문항 설문 → 4요인 계산 → (코드 내장 ND 기준) 표준화 → 0–100 점수 & 임상군 근접도
-- 레이더 그래프: Z → 0–100 환산값으로 표시
+- 레이더: Z → 0–100 환산값으로 표시
 - 요인명 단순화: 1=사회적 의사소통, 2=사회적 인식, 3=사회적 동기, 4=언어적 사회인지
-- PDF 다운로드, 응답 JSON 저장/불러오기, (관리자) 기준 추출 도우미
+- 바 차트: 요인별 서로 다른 색상 적용
+- PDF 리포트: 결과 기반으로 파일명 지정 저장 + 다운로드 (로컬 저장 디렉터리: reports/)
 
 requirements.txt 예시:
   streamlit
@@ -29,10 +30,11 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from datetime import datetime
 
 # ---------------------------- 페이지/테마 ----------------------------
-st.set_page_config(page_title="52문항 요인 평가 (ND 내장판)", layout="wide")
-st.title("🧠 52문항 기반 요인 평가 · ND 표준화 (내장판)")
+st.set_page_config(page_title="버디플랜 Buddy-Plan", layout="wide")
+st.title("버디플랜 Buddy-Plan")
 st.caption("ND 기준과 임상군 중심을 코드에 고정하여, 업로드 없이 즉시 평가합니다.")
 
 # ---------------------------- 요인/문항 정의 ----------------------------
@@ -169,26 +171,9 @@ def distance_similarity(subject_z: pd.Series, cents: dict):
         if k not in sims: sims[k] = np.nan
     return dists, sims
 
-# ---------------------------- 세션 저장/불러오기 ----------------------------
+# ---------------------------- 세션 상태 초기값 ----------------------------
 if "responses" not in st.session_state:
     st.session_state["responses"] = {pid: 3 for pid in ALL_P}  # 기본값 3
-
-left_s, right_s = st.sidebar.columns(2)
-with left_s:
-    if st.button("응답 JSON 저장"):
-        payload = json.dumps(st.session_state["responses"], ensure_ascii=False, indent=2)
-        st.download_button("⬇️ responses.json", data=payload.encode("utf-8"), file_name="responses.json", mime="application/json")
-with right_s:
-    up = st.file_uploader("응답 불러오기(JSON)", type=["json"], key="respjson")
-    if up is not None:
-        try:
-            data = json.load(up)
-            for k,v in data.items():
-                if k in st.session_state["responses"]:
-                    st.session_state["responses"][k] = int(v)
-            st.success("✅ 응답 불러오기 완료")
-        except Exception as e:
-            st.error(f"JSON 파싱 실패: {e}")
 
 # ---------------------------- 52문항 폼 ----------------------------
 st.subheader("🧩 52문항 설문 (1~5 Likert)")
@@ -214,7 +199,7 @@ idx_subj = compute_factor_index(P_subj, thresh_ratio=0.5).iloc[0]
 subj_z = z_from_embedded(idx_subj)
 subj_t = tscore_from_z(subj_z)
 
-# 요인 표시용 라벨(0–100/그래프에서 사용)
+# 표시용
 labels = [FACTOR_TITLES[f] for f in FACTOR_ORDER]
 subj_t_display = pd.Series([subj_t.get(f) for f in FACTOR_ORDER], index=labels)
 subj_z_display = pd.Series([subj_z.get(f) for f in FACTOR_ORDER], index=labels)
@@ -230,11 +215,11 @@ def interpret_factor(zval: float, name: str):
     if pd.isna(zval):
         return f"{name}: 데이터 부족으로 해석 불가"
     if zval >= 1.5:
-        return f"{name}: 매우 높은 편 (상위≈7%)"
+        return f"{name}: 매우 어려움 (상위≈7%)"
     elif zval >= 1.0:
-        return f"{name}: 높은 편 (상위≈16%)"
+        return f"{name}: 어려움 (상위≈16%)"
     elif zval >= 0.5:
-        return f"{name}: 다소 높은 편"
+        return f"{name}: 다소 어려움"
     elif zval > -0.5:
         return f"{name}: 보통 범위"
     elif zval > -1.0:
@@ -249,12 +234,22 @@ if closest:
     interp_lines.append(f"임상군 근접도: 가장 가까운 집단은 **{closest}** 입니다.")
 
 # ---------------------------- 시각화 ----------------------------
+# 요인별 바 색상 팔레트
+bar_colors = {
+    "사회적 의사소통": "#1f77b4",
+    "사회적 인식": "#ff7f0e",
+    "사회적 동기": "#2ca02c",
+    "언어적 사회인지": "#d62728",
+}
+
 left, mid, right = st.columns([1.1, 1.1, 0.9])
 with left:
     st.subheader("📊 요인 점수 (0–100)")
     fig_bar = go.Figure()
     yvals = [None if pd.isna(v) else v for v in subj_t_display.values]
+    colors = [bar_colors.get(name, "#888888") for name in subj_t_display.index]
     fig_bar.add_trace(go.Bar(x=list(subj_t_display.index), y=yvals,
+                             marker_color=colors,
                              text=["" if pd.isna(v) else f"{v:.1f}" for v in subj_t_display.values],
                              textposition="outside"))
     fig_bar.update_yaxes(range=[0,100])
@@ -275,7 +270,6 @@ with mid:
         if closest and GROUP_CENTROIDS_Z.get(closest) is not None:
             cen_z = np.array([GROUP_CENTROIDS_Z[closest][f] for f in FACTOR_ORDER])
             cen_t = np.clip(50 + 10*cen_z, 0, 100)
-            # tmask의 순서/항목에 맞춤
             cen_map = {FACTOR_TITLES[f]: cen_t[i] for i,f in enumerate(FACTOR_ORDER)}
             cen_vals = [cen_map[c] for c in cats] + [cen_map[cats[0]]]
             fig_rad.add_trace(go.Scatterpolar(r=cen_vals, theta=catsc, name=f'{closest} centroid(0–100)'))
@@ -290,6 +284,7 @@ with mid:
 
 with right:
     st.subheader("🎯 임상군 근접도")
+    D, S = distance_similarity(subj_z, GROUP_CENTROIDS_Z)  # 안전 재계산
     prox_df = pd.DataFrame({"Distance": D, "Similarity": S})
     st.dataframe(prox_df)
     if closest:
@@ -297,11 +292,12 @@ with right:
 
 st.markdown("---")
 st.subheader("📝 자동 해석")
-st.markdown("\n".join([f"- {line}" for line in interp_lines]))
+st.markdown("
+".join([f"- {line}" for line in interp_lines]))
 
 # ---------------------------- PDF 리포트 ----------------------------
 st.markdown("---")
-st.subheader("📤 결과 리포트 PDF 다운로드")
+st.subheader("📤 결과 리포트 PDF 저장/다운로드")
 
 # 폰트 등록 (한글)
 FONT_PATHS = ["fonts/NanumGothic.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc"]
@@ -322,32 +318,50 @@ def fig_to_png_bytes(fig):
         return None
     return fig.to_image(format="png", scale=2)
 
-if st.button("PDF 생성 및 다운로드"):
+# 파일명 입력 + 저장 디렉터리
+col_a, col_b = st.columns([1,1])
+with col_a:
+    default_name = f"factor_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    out_name = st.text_input("파일명", value=default_name)
+with col_b:
+    save_local = st.checkbox("로컬 reports/ 폴더에 저장 (로컬 실행 시)", value=False)
+
+if st.button("PDF 만들기 & 다운로드"):
     try:
         bar_png = fig_to_png_bytes(fig_bar)
-        # 레이더는 0–100 버전 사용
-        # Streamlit 내 fig_rad 변수를 그대로 활용
         rad_png = fig_to_png_bytes(fig_rad)
         pdf_buffer = io.BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=A4)
         W, H = A4
+        # 제목/요약
         c.setFont(FONT_NAME, 16)
         c.drawString(40, H-60, "52문항 요인 평가 리포트 (ND 표준화·내장판)")
         c.setFont(FONT_NAME, 10)
         y = H-90
+        # 요인별 0–100 점수 간단 요약
+        for name, val in subj_t_display.items():
+            vtxt = "NaN" if pd.isna(val) else f"{val:.1f}"
+            c.drawString(40, y, f"{name}: {vtxt}")
+            y -= 14
+            if y < 120:
+                c.showPage(); c.setFont(FONT_NAME, 10); y = H-60
+        # 자동 해석
         for line in interp_lines:
             c.drawString(40, y, line)
             y -= 14
             if y < 120:
                 c.showPage(); c.setFont(FONT_NAME, 10); y = H-60
+        # 바 차트
         c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "요인 점수 (0–100)")
         if bar_png:
             img1 = ImageReader(io.BytesIO(bar_png))
             c.drawImage(img1, 40, 200, width=W-80, height=H-300, preserveAspectRatio=True, mask='auto')
+        # 레이더
         if rad_png:
             c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "레이더 (0–100)")
             img2 = ImageReader(io.BytesIO(rad_png))
             c.drawImage(img2, 80, 180, width=W-160, height=H-320, preserveAspectRatio=True, mask='auto')
+        # 근접도
         c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "임상군 근접도")
         c.setFont(FONT_NAME, 10); y = H-90
         for g in prox_df.index:
@@ -358,44 +372,17 @@ if st.button("PDF 생성 및 다운로드"):
             c.drawString(40, y, f"{g}: 거리={d_txt}  유사도={s_txt}")
             y -= 14
         c.save()
-        st.download_button("⬇️ PDF 다운로드", data=pdf_buffer.getvalue(), file_name="factor_report_embedded.pdf", mime="application/pdf")
+        pdf_bytes = pdf_buffer.getvalue()
+        # 다운로드 버튼
+        st.download_button("⬇️ PDF 다운로드", data=pdf_bytes, file_name=out_name, mime="application/pdf")
+        # 로컬 저장 옵션 (Cloud에서는 경로 접근 불가할 수 있음)
+        if save_local:
+            os.makedirs("reports", exist_ok=True)
+            local_path = os.path.join("reports", out_name)
+            with open(local_path, "wb") as f:
+                f.write(pdf_bytes)
+            st.success(f"로컬 저장 완료: {local_path}")
     except Exception as e:
         st.error(f"PDF 생성 실패: {e}")
 
-# ---------------------------- (관리자) 기준 추출 도우미 ----------------------------
-with st.expander("🔧 관리자: 기준값 추출 도우미 (선택) "):
-    st.caption("참조 엑셀을 일시 업로드하여 ND 평균/표준편차와 임상군 Z-중심을 계산하고, 코드로 붙여넣을 딕셔너리를 생성합니다.")
-    up_ref = st.file_uploader("참조 엑셀(.xlsx) – DIAG + P01..P52", type=["xlsx"], key="admref")
-    diag_col = st.text_input("DIAG 열 이름", value="DIAG")
-    if up_ref is not None:
-        try:
-            df = pd.read_excel(up_ref)
-            if diag_col not in df.columns:
-                st.error(f"'{diag_col}' 열이 없습니다.")
-            else:
-                Ps = pd.DataFrame({c: pd.to_numeric(df[c], errors='coerce') for c in ALL_P if c in df.columns})
-                idx = compute_factor_index(Ps, 0.5)
-                diag = df[diag_col].astype(str)
-                is_nd = (diag == "ND")
-                base_mean = idx.loc[is_nd].mean().round(4).to_dict()
-                base_std  = idx.loc[is_nd].std(ddof=0).replace(0, np.nan).round(4).to_dict()
-                Z = (idx - idx.loc[is_nd].mean()) / idx.loc[is_nd].std(ddof=0).replace(0, np.nan)
-                cents = {}
-                for g in [g for g in CLINICAL_GROUPS if g in diag.unique()]:
-                    cents[g] = Z.loc[diag==g].mean().round(4).to_dict()
-                st.success("계산 완료 — 아래를 ND_BASE_MEAN / ND_BASE_STD / GROUP_CENTROIDS_Z 에 붙여넣으세요.")
-                st.code(json.dumps(base_mean, ensure_ascii=False, indent=2), language="json")
-                st.code(json.dumps(base_std, ensure_ascii=False, indent=2), language="json")
-                st.code(json.dumps(cents, ensure_ascii=False, indent=2), language="json")
-        except Exception as e:
-            st.error(f"기준 추출 실패: {e}")
 
-# ---------------------------- 도움말 ----------------------------
-st.markdown(
-    """
-**메모**  
-- ND 기준/임상군 중심은 코드 상단의 상수(`ND_BASE_MEAN`, `ND_BASE_STD`, `GROUP_CENTROIDS_Z`)를 실제 값으로 교체하세요.  
-- PDF 한글을 위해 `fonts/NanumGothic.ttf` 포함을 권장합니다(없으면 macOS 기본 폰트로 대체).  
-- 0–100 변환: Score = clip(50 + 10·z, 0, 100).  
-"""
-)
