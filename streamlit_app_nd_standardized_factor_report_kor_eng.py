@@ -58,25 +58,25 @@ CLINICAL_GROUPS = ["ND","ASD","ADHD","SCD","HR"]
 # ND 집단의 요인 평균/표준편차 (요인 점수는 '요인에 포함된 P문항 평균')
 # 예시값은 자리표시자입니다. 실제 연구 데이터로 계산한 값을 아래에 덮어쓰세요.
 ND_BASE_MEAN = {
-    "Factor1": 3.0,
-    "Factor2": 3.2,
-    "Factor3": 3.1,
-    "Factor4": 3.0,
+    "Factor1": 2.50,
+    "Factor2": 2.12,
+    "Factor3": 2.59,
+    "Factor4": 3.09,
 }
 ND_BASE_STD = {
-    "Factor1": 0.6,
-    "Factor2": 0.5,
-    "Factor3": 0.5,
-    "Factor4": 0.4,
+    "Factor1": 0.58,
+    "Factor2": 0.74,
+    "Factor3": 0.70,
+    "Factor4": 1.01,
 }
 # 각 임상군의 Z-공간 상 '요인별 중심값(centroid)' — ND 기준으로 표준화된 평균 벡터
 # 예시값(가짜). 실제 참조 데이터로 계산한 Z 평균을 대입하세요.
 GROUP_CENTROIDS_Z = {
     "ND"  : {"Factor1": 0.0,  "Factor2": 0.0,  "Factor3": 0.0,  "Factor4": 0.0},
-    "ASD" : {"Factor1": 1.1,  "Factor2": -0.6, "Factor3": -0.2, "Factor4": -0.4},
-    "ADHD": {"Factor1": 0.4,  "Factor2": -0.2, "Factor3": 0.6,  "Factor4": -0.1},
-    "SCD" : {"Factor1": 0.7,  "Factor2": -1.0, "Factor3": -0.3, "Factor4": -0.8},
-    "HR"  : {"Factor1": 0.3,  "Factor2": -0.1, "Factor3": 0.1,  "Factor4": 0.0},
+    "ASD" : {"Factor1": 2.29,  "Factor2": 0.93, "Factor3": 0.86, "Factor4": 1.05},
+    "ADHD": {"Factor1": 1.34,  "Factor2": 0.63, "Factor3": 0.12,  "Factor4": 0.60},
+    "SCD" : {"Factor1": 1.87,  "Factor2": 1.01, "Factor3": 0.71, "Factor4": 0.76},
+    "HR"  : {"Factor1": 1.70,  "Factor2": 0.21, "Factor3": 1.26,  "Factor4": 0.26},
 }
 
 # ---------------------------- 52문항 텍스트 ----------------------------
