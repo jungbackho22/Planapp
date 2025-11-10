@@ -1,12 +1,15 @@
 # app_52item_assessment_embedded.py
 # -*- coding: utf-8 -*-
 """
-Streamlit Cloud-ready (간결판)
+Streamlit Cloud-ready (Internet only)
 - 52문항 설문 → 4요인 계산 → (코드 내장 ND 기준) 표준화 → 0–100 점수 & 임상군 근접도
 - 레이더: Z → 0–100 환산값으로 표시
-- 요인명 단순화: 1=사회적 의사소통, 2=사회적 인식, 3=사회적 동기, 4=언어적 사회인지
-- 바 차트: 요인별 서로 다른 색상 적용
-- PDF 리포트: 결과 기반으로 파일명 지정 저장 + 다운로드 (로컬 저장 디렉터리: reports/)
+- 요인명: 1=사회적 의사소통, 2=사회적 인식, 3=사회적 동기, 4=언어적 사회인지
+- 바 차트: 요인별 서로 다른 색상
+- PDF 리포트: 메모리에서 생성 후 즉시 다운로드(로컬 파일 저장 X)
+- 자동 해석: 심리학 용어(
+    높은 편 → 위험/고위험, 낮은 편 → 안정/매우 안정
+  )으로 표기
 
 requirements.txt 예시:
   streamlit
@@ -17,10 +20,10 @@ requirements.txt 예시:
   reportlab
   kaleido
 
-폰트(한글 PDF용): fonts/NanumGothic.ttf (repo에 포함 권장)
+폰트(한글 PDF용): 가능하면 fonts/NanumGothic.ttf 포함(없으면 시스템 폰트로 대체)
 """
 
-import io, os, json
+import io, os
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -30,7 +33,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from datetime import datetime
 
 # ---------------------------- 페이지/테마 ----------------------------
 st.set_page_config(page_title="52문항 요인 평가 (ND 내장판)", layout="wide")
@@ -44,7 +46,6 @@ FACTOR_ITEMS = {
     "Factor3": ["P08","P10","P15","P18","P21","P25","P26","P29","P34","P40"],
     "Factor4": ["P03","P20","P32"],
 }
-# 요인명 단순화 (요청 반영)
 FACTOR_TITLES = {
     "Factor1": "사회적 의사소통",
     "Factor2": "사회적 인식",
@@ -55,7 +56,7 @@ FACTOR_ORDER = ["Factor1","Factor2","Factor3","Factor4"]
 ALL_P = [f"P{str(i).zfill(2)}" for i in range(1,53)]
 CLINICAL_GROUPS = ["ND","ASD","ADHD","SCD","HR"]
 
-# ---------------------------- ⛳ 내장 기준값 (여기를 실제 값으로 교체하세요) ----------------------------
+# ---------------------------- ⛳ 내장 기준값 (실제 값으로 교체) ----------------------------
 ND_BASE_MEAN = {"Factor1": 2.50,"Factor2": 2.12,"Factor3": 2.59,"Factor4": 3.09}
 ND_BASE_STD = {"Factor1": 0.58,"Factor2": 0.74,"Factor3": 0.70,"Factor4": 1.01}
 GROUP_CENTROIDS_Z = {
@@ -199,7 +200,7 @@ idx_subj = compute_factor_index(P_subj, thresh_ratio=0.5).iloc[0]
 subj_z = z_from_embedded(idx_subj)
 subj_t = tscore_from_z(subj_z)
 
-# 표시용
+# 표시용 라벨
 labels = [FACTOR_TITLES[f] for f in FACTOR_ORDER]
 subj_t_display = pd.Series([subj_t.get(f) for f in FACTOR_ORDER], index=labels)
 subj_z_display = pd.Series([subj_z.get(f) for f in FACTOR_ORDER], index=labels)
@@ -210,32 +211,32 @@ finite_d = {k:v for k,v in D.items() if np.isfinite(v)}
 if finite_d:
     closest = min(finite_d.items(), key=lambda x:x[1])[0]
 
-# ---------------------------- 자동 해석 ----------------------------
-def interpret_factor(zval: float, name: str):
+# ---------------------------- 자동 해석(심리학 용어) ----------------------------
+def interpret_psych(zval: float, name: str):
     if pd.isna(zval):
-        return f"{name}: 데이터 부족으로 해석 불가"
-    if zval >= 1.5:
-        return f"{name}: 매우 위험 개별 교육 필요 (상위≈7%)"
+        return f"{name}: 데이터 부족"
+    # Z 기준 심리학적 위험/안정 레이블링
+    if zval >= 2.0:
+        return f"{name}: 고위험 (매우 높음)"
+    elif zval >= 1.5:
+        return f"{name}: 위험 (높음)"
     elif zval >= 1.0:
-        return f"{name}: 위험 교육 상담 필요 (상위≈16%)"
-    elif zval >= 0.5:
-        return f"{name}: 다소 위험 요관촬"
+        return f"{name}: 주의 필요 (다소 높음)"
     elif zval > -0.5:
-        return f"{name}: 보통 범위"
+        return f"{name}: 중립 범위"
     elif zval > -1.0:
-        return f"{name}: 다소 낮은 편"
+        return f"{name}: 안정 경향 (다소 낮음)"
     elif zval > -1.5:
-        return f"{name}: 낮은 편 (하위≈16%)"
+        return f"{name}: 안정 (낮음)"
     else:
-        return f"{name}: 매우 낮은 편 (하위≈7%)"
+        return f"{name}: 매우 안정 (매우 낮음)"
 
-interp_lines = [interpret_factor(subj_z_display.get(FACTOR_TITLES[f]), FACTOR_TITLES[f]) for f in FACTOR_ORDER]
+interp_lines = [interpret_psych(subj_z_display.get(FACTOR_TITLES[f]), FACTOR_TITLES[f]) for f in FACTOR_ORDER]
 if closest:
-    interp_lines.append(f"임상군 근접도: 가장 가까운 집단은 **{closest}** 입니다.")
+    interp_lines.append(f"임상군 근접도: 가장 가까운 집단은 **{closest}**")
 
 # ---------------------------- 시각화 ----------------------------
-# 요인별 바 색상 팔레트
-bar_colors = {
+bar_colors = {  # 요인별 바 색상
     "사회적 의사소통": "#1f77b4",
     "사회적 인식": "#ff7f0e",
     "사회적 동기": "#2ca02c",
@@ -264,9 +265,7 @@ with mid:
         vals = list(tmask.values) + [tmask.values[0]]
         catsc = cats + [cats[0]]
         fig_rad = go.Figure()
-        # 본인 점수(0–100)
         fig_rad.add_trace(go.Scatterpolar(r=vals, theta=catsc, fill='toself', name='Subject(0–100)'))
-        # 가장 가까운 집단 중심(0–100 변환) 표시
         if closest and GROUP_CENTROIDS_Z.get(closest) is not None:
             cen_z = np.array([GROUP_CENTROIDS_Z[closest][f] for f in FACTOR_ORDER])
             cen_t = np.clip(50 + 10*cen_z, 0, 100)
@@ -283,8 +282,7 @@ with mid:
         st.info("레이더를 그릴 유효한 점수가 없습니다.")
 
 with right:
-    st.subheader("임상군 근접도")
-    D, S = distance_similarity(subj_z, GROUP_CENTROIDS_Z)  # 안전 재계산
+    st.subheader("🎯 임상군 근접도")
     prox_df = pd.DataFrame({"Distance": D, "Similarity": S})
     st.dataframe(prox_df)
     if closest:
@@ -292,11 +290,12 @@ with right:
 
 st.markdown("---")
 st.subheader("📝 자동 해석")
-st.markdown("\n".join([f"- {line}" for line in interp_lines]))
+st.markdown("
+".join([f"- {line}" for line in interp_lines]))
 
-# ---------------------------- PDF 리포트 ----------------------------
+# ---------------------------- PDF 리포트 (메모리 생성 → 다운로드) ----------------------------
 st.markdown("---")
-st.subheader("📤 결과 리포트 PDF 저장/다운로드")
+st.subheader("📤 결과 리포트 PDF 다운로드")
 
 # 폰트 등록 (한글)
 FONT_PATHS = ["fonts/NanumGothic.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc"]
@@ -317,34 +316,26 @@ def fig_to_png_bytes(fig):
         return None
     return fig.to_image(format="png", scale=2)
 
-# 파일명 입력 + 저장 디렉터리
-col_a, col_b = st.columns([1,1])
-with col_a:
-    default_name = f"factor_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    out_name = st.text_input("파일명", value=default_name)
-with col_b:
-    save_local = st.checkbox("로컬 reports/ 폴더에 저장 (로컬 실행 시)", value=False)
-
-if st.button("PDF 만들기 & 다운로드"):
+if st.button("PDF 만들기"):
     try:
         bar_png = fig_to_png_bytes(fig_bar)
         rad_png = fig_to_png_bytes(fig_rad)
         pdf_buffer = io.BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=A4)
         W, H = A4
-        # 제목/요약
+        # 제목
         c.setFont(FONT_NAME, 16)
         c.drawString(40, H-60, "52문항 요인 평가 리포트 (ND 표준화·내장판)")
+        # 요약(0–100)
         c.setFont(FONT_NAME, 10)
         y = H-90
-        # 요인별 0–100 점수 간단 요약
         for name, val in subj_t_display.items():
             vtxt = "NaN" if pd.isna(val) else f"{val:.1f}"
             c.drawString(40, y, f"{name}: {vtxt}")
             y -= 14
             if y < 120:
                 c.showPage(); c.setFont(FONT_NAME, 10); y = H-60
-        # 자동 해석
+        # 자동 해석(심리학 용어)
         for line in interp_lines:
             c.drawString(40, y, line)
             y -= 14
@@ -371,17 +362,7 @@ if st.button("PDF 만들기 & 다운로드"):
             c.drawString(40, y, f"{g}: 거리={d_txt}  유사도={s_txt}")
             y -= 14
         c.save()
-        pdf_bytes = pdf_buffer.getvalue()
-        # 다운로드 버튼
-        st.download_button("⬇️ PDF 다운로드", data=pdf_bytes, file_name=out_name, mime="application/pdf")
-        # 로컬 저장 옵션 (Cloud에서는 경로 접근 불가할 수 있음)
-        if save_local:
-            os.makedirs("reports", exist_ok=True)
-            local_path = os.path.join("reports", out_name)
-            with open(local_path, "wb") as f:
-                f.write(pdf_bytes)
-            st.success(f"로컬 저장 완료: {local_path}")
+        st.download_button("⬇️ PDF 다운로드", data=pdf_buffer.getvalue(), file_name="factor_report.pdf", mime="application/pdf")
     except Exception as e:
         st.error(f"PDF 생성 실패: {e}")
-
 
