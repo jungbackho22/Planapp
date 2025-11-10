@@ -290,8 +290,7 @@ with right:
 
 st.markdown("---")
 st.subheader("📝 자동 해석")
-st.markdown("
-".join([f"- {line}" for line in interp_lines]))
+st.markdown("\n".join([f"- {line}" for line in interp_lines]))
 
 # ---------------------------- PDF 리포트 (메모리 생성 → 다운로드) ----------------------------
 st.markdown("---")
