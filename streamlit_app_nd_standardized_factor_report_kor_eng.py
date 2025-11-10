@@ -254,7 +254,7 @@ with left:
                              text=["" if pd.isna(v) else f"{v:.1f}" for v in subj_t_display.values],
                              textposition="outside"))
     fig_bar.update_yaxes(range=[0,100])
-    fig_bar.update_layout(height=420, margin=dict(l=20,r=20,t=30,b=20))
+    fig_bar.update_layout(height=420,width=350,margin=dict(l=20,r=20,t=30,b=20))
     st.plotly_chart(fig_bar, use_container_width=True)
 
 with mid:
