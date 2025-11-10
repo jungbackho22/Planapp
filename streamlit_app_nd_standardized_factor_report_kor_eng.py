@@ -1,21 +1,33 @@
-# streamlit_app_nd_standardized_factor_report.py
+# app_52item_assessment_embedded.py
 # -*- coding: utf-8 -*-
 """
-인터넷/Cloud 전용
-- 52문항 → 4요인 평균 → ND 기준 표준화(Z) → 0–100 환산(T형식) 점수
-- 프로파일(가로) 차트: K-CDI 스타일(축 40~90, 얇은 막대 표시)
-- 자동해석: 심리학 용어(고위험/위험/주의/중립/안정 경향/안정/매우 안정) 표로 정리
-- PDF: 프로파일 차트 + 해석표를 메모리에서 생성 후 즉시 다운로드
+Streamlit Cloud-ready (Internet only)
+- 52문항 설문 → 4요인 계산 → (코드 내장 ND 기준) 표준화 → 0–100 점수 & 임상군 근접도
+- 레이더: Z → 0–100 환산값으로 표시
+- 요인명: 1=사회적 의사소통, 2=사회적 인식, 3=사회적 동기, 4=언어적 사회인지
+- 바 차트: 요인별 서로 다른 색상
+- PDF 리포트: 메모리에서 생성 후 즉시 다운로드(로컬 파일 저장 X)
+- 자동 해석: 심리학 용어(
+    높은 편 → 위험/고위험, 낮은 편 → 안정/매우 안정
+  )으로 표기
+
+requirements.txt 예시:
+  streamlit
+  pandas
+  numpy
+  plotly
+  scikit-learn
+  reportlab
+  kaleido
+
+폰트(한글 PDF용): 가능하면 fonts/NanumGothic.ttf 포함(없으면 시스템 폰트로 대체)
 """
 
 import io, os
-from datetime import datetime
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
@@ -23,8 +35,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 # ---------------------------- 페이지/테마 ----------------------------
-st.set_page_config(page_title="52문항 요인 평가 (ND 표준화)", layout="wide")
-st.title("🧠 52문항 기반 요인 평가 · ND 표준화")
+st.set_page_config(page_title="52문항 요인 평가 (ND 내장판)", layout="wide")
+st.title("🧠 52문항 기반 요인 평가 · ND 표준화 (내장판)")
 st.caption("ND 기준과 임상군 중심을 코드에 고정하여, 업로드 없이 즉시 평가합니다.")
 
 # ---------------------------- 요인/문항 정의 ----------------------------
@@ -44,7 +56,7 @@ FACTOR_ORDER = ["Factor1","Factor2","Factor3","Factor4"]
 ALL_P = [f"P{str(i).zfill(2)}" for i in range(1,53)]
 CLINICAL_GROUPS = ["ND","ASD","ADHD","SCD","HR"]
 
-# ---------------------------- ⛳ 내장 기준값 (실제 수치로 교체하세요) ----------------------------
+# ---------------------------- ⛳ 내장 기준값 (실제 값으로 교체) ----------------------------
 ND_BASE_MEAN = {"Factor1": 3.0, "Factor2": 3.2, "Factor3": 3.1, "Factor4": 3.0}
 ND_BASE_STD  = {"Factor1": 0.6, "Factor2": 0.5, "Factor3": 0.5, "Factor4": 0.4}
 GROUP_CENTROIDS_Z = {
@@ -110,16 +122,8 @@ QUESTION_TEXTS = [
     "나는 어른이 옆에 없으면 불안하다."
 ]
 
-# ---------------------------- 색상 팔레트 ----------------------------
-bar_colors = {
-    "사회적 의사소통": "#1f77b4",
-    "사회적 인식":   "#ff7f0e",
-    "사회적 동기":   "#2ca02c",
-    "언어적 사회인지": "#d62728",
-}
-
 # ---------------------------- 유틸 ----------------------------
-def compute_factor_index(P_frame: pd.DataFrame, thresh_ratio: float = 0.5) -> pd.DataFrame:
+def compute_factor_index(P_frame: pd.DataFrame, thresh_ratio: float = 0.5):
     idx = pd.DataFrame(index=P_frame.index)
     for fname, items in FACTOR_ITEMS.items():
         present = [c for c in items if c in P_frame.columns]
@@ -140,147 +144,37 @@ def z_from_embedded(idx_row: pd.Series) -> pd.Series:
         z[f] = (val - m) / s if (m is not None and s not in (None, 0) and pd.notna(val)) else np.nan
     return pd.Series(z)
 
-def tscore_from_z(z: pd.Series) -> pd.Series:
-    # 50 + 10*z 를 0~100로 클리핑 (표시는 40~90 축에 맞춰 별도 처리)
+def tscore_from_z(z):
     return (50 + 10*z).clip(lower=0, upper=100)
 
-# 위험수준 라벨
-def level_from_z(z):
-    if pd.isna(z): return "데이터 부족"
-    if z >= 2.0:  return "고위험"
-    if z >= 1.5:  return "위험"
-    if z >= 1.0:  return "주의"
-    if z > -0.5:  return "중립"
-    if z > -1.0:  return "안정 경향"
-    if z > -1.5:  return "안정"
-    return "매우 안정"
+def distance_similarity(subject_z: pd.Series, cents: dict):
+    dists = {}
+    for g, c in cents.items():
+        cols = [f for f in FACTOR_ORDER if pd.notna(subject_z.get(f)) and (f in c) and pd.notna(c[f])]
+        if not cols:
+            dists[g] = np.nan
+            continue
+        sv = np.array([subject_z[f] for f in cols])
+        cv = np.array([c[f] for f in cols])
+        dists[g] = float(np.linalg.norm(sv - cv))
+    valid = {k:v for k,v in dists.items() if np.isfinite(v)}
+    if not valid:
+        return dists, {k:np.nan for k in dists}
+    vals = np.array(list(valid.values()))
+    if np.allclose(vals, 0):
+        probs = np.ones_like(vals)/len(vals)
+    else:
+        logits = -vals; logits -= logits.max(); ex = np.exp(logits); probs = ex/ex.sum()
+    sims = {}
+    for (k,_), p in zip(valid.items(), probs):
+        sims[k] = float(p)
+    for k in dists.keys():
+        if k not in sims: sims[k] = np.nan
+    return dists, sims
 
-# 요인별 위험수준 → 문장
-INTERP_DICT = {
-    "사회적 의사소통": {
-        "고위험":"대인 대화의 지속·상호성에서 현저한 어려움이 시사됩니다.",
-        "위험":"의사소통 상호작용의 질적 저하가 관찰될 가능성이 큽니다.",
-        "주의":"상대 반응조정/대화 유지에서 주의가 필요합니다.",
-        "중립":"연령 기대 수준 내 기능으로 보입니다.",
-        "안정 경향":"의사소통 상호작용에서 비교적 보호 요인이 관찰됩니다.",
-        "안정":"사회적 의사소통 기능이 안정적입니다.",
-        "매우 안정":"사회적 의사소통 기능이 매우 안정적입니다.",
-    },
-    "사회적 인식": {
-        "고위험":"타인의 표정·의도 해석에 중대한 어려움이 시사됩니다.",
-        "위험":"비언어적 단서 해석의 일관된 어려움이 예상됩니다.",
-        "주의":"관계 맥락/암묵적 규칙 인식에 주의가 필요합니다.",
-        "중립":"사회적 단서 인식이 중립 범위입니다.",
-        "안정 경향":"단서 인식/상황 파악에서 비교적 보호적입니다.",
-        "안정":"사회적 인식 기능이 안정적입니다.",
-        "매우 안정":"사회적 인식 기능이 매우 안정적입니다.",
-    },
-    "사회적 동기": {
-        "고위험":"대인 접근/참여 동기가 현저히 저하될 수 있습니다.",
-        "위험":"또래 상호작용 회피 경향이 두드러질 수 있습니다.",
-        "주의":"집단 활동 참여/지속에 주의가 필요합니다.",
-        "중립":"대인 접근 동기가 중립 범위입니다.",
-        "안정 경향":"대인 상호작용에 긍정적 접근이 관찰됩니다.",
-        "안정":"사회적 동기가 안정적입니다.",
-        "매우 안정":"사회적 동기가 매우 안정적입니다.",
-    },
-    "언어적 사회인지": {
-        "고위험":"은유·관용구·숨은 뜻 이해에서 현저한 어려움이 시사됩니다.",
-        "위험":"문맥 의도 추론의 일관된 어려움이 예상됩니다.",
-        "주의":"간접화행/상황함의 이해에 주의가 필요합니다.",
-        "중립":"언어적 사회인지가 중립 범위입니다.",
-        "안정 경향":"의미 추론/맥락 이해가 비교적 보호적입니다.",
-        "안정":"언어적 사회인지가 안정적입니다.",
-        "매우 안정":"언어적 사회인지가 매우 안정적입니다.",
-    },
-}
-
-# ---------------------------- K-CDI 스타일 프로파일 차트 ----------------------------
-def make_profile_chart_t(t_series: pd.Series) -> go.Figure:
-    """
-    t_series: index=요인명(한글), values=0~100
-    표시축: 40~90 (T척도 느낌), 얇은 수평 막대로 점만 표시
-    """
-    cats   = list(t_series.index)
-    vals   = [None if pd.isna(v) else float(v) for v in t_series.values]
-    xpos   = [None if v is None else max(40.0, min(90.0, v)) for v in vals]
-    seg_w  = 1.8
-    bases  = [None if x is None else x - seg_w/2 for x in xpos]
-    widths = [0 if b is None else seg_w for b in bases]
-
-    cats_rev   = cats[::-1]
-    bases_rev  = bases[::-1]
-    widths_rev = widths[::-1]
-    colors_rev = [bar_colors.get(c, "#999999") for c in cats_rev]
-
-    fig = go.Figure()
-
-    # 배경 프레임
-    fig.add_shape(type="rect", x0=40, x1=90, y0=-0.5, y1=len(cats)-0.5,
-                  line=dict(color="#444", width=1), fillcolor="white")
-
-    # 세로 점선 그리드
-    for x in range(40, 91, 5):
-        fig.add_vline(x=x, line=dict(color="#dddddd", width=1, dash="dot"))
-
-    fig.add_trace(go.Bar(
-        y=cats_rev,
-        x=widths_rev,
-        base=bases_rev,
-        orientation="h",
-        marker_color=colors_rev,
-        marker_line=dict(width=0),
-        hovertemplate="%{y} : T=%{customdata:.1f}<extra></extra>",
-        customdata=[v for v in vals[::-1]],
-        showlegend=False,
-    ))
-
-    # 왼쪽 T점수 텍스트
-    for i, v in enumerate(vals[::-1]):
-        if v is not None:
-            fig.add_annotation(x=39.2, y=i, text=f"{int(round(v))}",
-                               xanchor="right", yanchor="middle",
-                               showarrow=False, font=dict(size=12))
-
-    fig.add_annotation(x=90, y=len(cats)-0.9, text="단위: T점수",
-                       xanchor="right", yanchor="bottom",
-                       showarrow=False, font=dict(size=11, color="#444"))
-
-    fig.update_xaxes(range=[39, 91], tickmode="array",
-                     tickvals=list(range(40, 91, 5)),
-                     showgrid=False, zeroline=False)
-    fig.update_yaxes(showgrid=False, zeroline=False)
-    fig.update_layout(height=max(260, 70*len(cats)),
-                      width=680,  # ▶ 가로폭 (원하면 조절)
-                      margin=dict(l=120, r=30, t=30, b=40))
-    return fig
-
-# ---------------------------- 해석표(Table) ----------------------------
-def make_interpret_table(subj_z_display: pd.Series) -> go.Figure:
-    rows_scale, rows_text = [], []
-    for name, z in subj_z_display.items():
-        lv  = level_from_z(z)
-        txt = INTERP_DICT.get(name, {}).get(lv, f"{name}: {lv}")
-        rows_scale.append(name)
-        rows_text.append(f"[{lv}] {txt}")
-    table = go.Figure(data=[go.Table(
-        columnorder=[1,2],
-        columnwidth=[140, 520],
-        header=dict(
-            values=["<b>척도/하위척도</b>", "<b>특징</b>"],
-            fill_color="#f2f2f2",
-            align="left",
-            font=dict(size=12)
-        ),
-        cells=dict(values=[rows_scale, rows_text], align="left", height=26)
-    )])
-    table.update_layout(margin=dict(l=10, r=10, t=10, b=10),
-                        width=740, height=max(140, 32*len(rows_scale)+60))
-    return table
-
-# ---------------------------- 세션 초기값 ----------------------------
+# ---------------------------- 세션 상태 초기값 ----------------------------
 if "responses" not in st.session_state:
-    st.session_state["responses"] = {pid: 3 for pid in ALL_P}
+    st.session_state["responses"] = {pid: 3 for pid in ALL_P}  # 기본값 3
 
 # ---------------------------- 52문항 폼 ----------------------------
 st.subheader("🧩 52문항 설문 (1~5 Likert)")
@@ -306,29 +200,103 @@ idx_subj = compute_factor_index(P_subj, thresh_ratio=0.5).iloc[0]
 subj_z = z_from_embedded(idx_subj)
 subj_t = tscore_from_z(subj_z)
 
-# 표시용(한글 라벨)
+# 표시용 라벨
 labels = [FACTOR_TITLES[f] for f in FACTOR_ORDER]
 subj_t_display = pd.Series([subj_t.get(f) for f in FACTOR_ORDER], index=labels)
 subj_z_display = pd.Series([subj_z.get(f) for f in FACTOR_ORDER], index=labels)
 
-# ---------------------------- 시각화 ----------------------------
-left, right = st.columns([1.0, 1.0])
+D, S = distance_similarity(subj_z, GROUP_CENTROIDS_Z)
+closest = None
+finite_d = {k:v for k,v in D.items() if np.isfinite(v)}
+if finite_d:
+    closest = min(finite_d.items(), key=lambda x:x[1])[0]
 
+# ---------------------------- 자동 해석(심리학 용어) ----------------------------
+def interpret_psych(zval: float, name: str):
+    if pd.isna(zval):
+        return f"{name}: 데이터 부족"
+    # Z 기준 심리학적 위험/안정 레이블링
+    if zval >= 2.0:
+        return f"{name}: 고위험 (매우 높음)"
+    elif zval >= 1.5:
+        return f"{name}: 위험 (높음)"
+    elif zval >= 1.0:
+        return f"{name}: 주의 필요 (다소 높음)"
+    elif zval > -0.5:
+        return f"{name}: 평균 범위"
+    elif zval > -1.0:
+        return f"{name}: 안정 경향 (다소 낮음)"
+    elif zval > -1.5:
+        return f"{name}: 안정 (낮음)"
+    else:
+        return f"{name}: 매우 안정 (매우 낮음)"
+
+interp_lines = [interpret_psych(subj_z_display.get(FACTOR_TITLES[f]), FACTOR_TITLES[f]) for f in FACTOR_ORDER]
+if closest:
+    interp_lines.append(f"임상군 근접도: 가장 가까운 집단은 **{closest}**")
+
+# ---------------------------- 시각화 ----------------------------
+bar_colors = {  # 요인별 바 색상
+    "사회적 의사소통": "#1f77b4",
+    "사회적 인식": "#ff7f0e",
+    "사회적 동기": "#2ca02c",
+    "언어적 사회인지": "#d62728",
+}
+
+left, mid, right = st.columns([1.1, 1.1, 0.9])
 with left:
-    st.subheader("📊 결과 프로파일 (T 40–90)")
-    fig_profile = make_profile_chart_t(subj_t_display)
-    st.plotly_chart(fig_profile, use_container_width=False)
+    st.subheader("📊 요인 점수 (0–100)")
+    fig_bar = go.Figure()
+    yvals = [None if pd.isna(v) else v for v in subj_t_display.values]
+    colors = [bar_colors.get(name, "#888888") for name in subj_t_display.index]
+    fig_bar.add_trace(go.Bar(x=list(subj_t_display.index), y=yvals,
+                             marker_color=colors,
+                             text=["" if pd.isna(v) else f"{v:.1f}" for v in subj_t_display.values],
+                             textposition="outside"))
+    fig_bar.update_yaxes(range=[0,100])
+    fig_bar.update_layout(height=420, margin=dict(l=20,r=20,t=30,b=20))
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+with mid:
+    st.subheader("🕸️ 레이더 (0–100)")
+    tmask = subj_t_display.dropna()
+    if not tmask.empty:
+        cats = list(tmask.index)
+        vals = list(tmask.values) + [tmask.values[0]]
+        catsc = cats + [cats[0]]
+        fig_rad = go.Figure()
+        fig_rad.add_trace(go.Scatterpolar(r=vals, theta=catsc, fill='toself', name='Subject(0–100)'))
+        if closest and GROUP_CENTROIDS_Z.get(closest) is not None:
+            cen_z = np.array([GROUP_CENTROIDS_Z[closest][f] for f in FACTOR_ORDER])
+            cen_t = np.clip(50 + 10*cen_z, 0, 100)
+            cen_map = {FACTOR_TITLES[f]: cen_t[i] for i,f in enumerate(FACTOR_ORDER)}
+            cen_vals = [cen_map[c] for c in cats] + [cen_map[cats[0]]]
+            fig_rad.add_trace(go.Scatterpolar(r=cen_vals, theta=catsc, name=f'{closest} centroid(0–100)'))
+        fig_rad.update_layout(
+            height=420, margin=dict(l=20,r=20,t=30,b=20),
+            polar=dict(radialaxis=dict(visible=True, range=[0,100], tick0=0, dtick=10))
+        )
+        st.plotly_chart(fig_rad, use_container_width=True)
+    else:
+        fig_rad = None
+        st.info("레이더를 그릴 유효한 점수가 없습니다.")
 
 with right:
-    st.subheader("📝 자동 해석 (심리학 용어·요약표)")
-    fig_table = make_interpret_table(subj_z_display)
-    st.plotly_chart(fig_table, use_container_width=False)
+    st.subheader("🎯 임상군 근접도")
+    prox_df = pd.DataFrame({"Distance": D, "Similarity": S})
+    st.dataframe(prox_df)
+    if closest:
+        st.success(f"가장 가까운 집단: **{closest}**")
 
-# ---------------------------- PDF (메모리 생성 → 다운로드) ----------------------------
+st.markdown("---")
+st.subheader("📝 자동 해석")
+st.markdown("\n".join([f"- {line}" for line in interp_lines]))
+
+# ---------------------------- PDF 리포트 (메모리 생성 → 다운로드) ----------------------------
 st.markdown("---")
 st.subheader("📤 결과 리포트 PDF 다운로드")
 
-# 한글 폰트 등록(가능하면 저장소에 fonts/NanumGothic.ttf 포함)
+# 폰트 등록 (한글)
 FONT_PATHS = ["fonts/NanumGothic.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc"]
 FONT_NAME = None
 for fp in FONT_PATHS:
@@ -345,59 +313,55 @@ if FONT_NAME is None:
 def fig_to_png_bytes(fig):
     if fig is None:
         return None
-    return fig.to_image(format="png", scale=2)  # kaleido 필요
-
-# 파일명
-default_name = f"factor_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-out_name = st.text_input("파일명", value=default_name)
+    return fig.to_image(format="png", scale=2)
 
 if st.button("PDF 만들기"):
     try:
-        profile_png = fig_to_png_bytes(fig_profile)
-        table_png   = fig_to_png_bytes(fig_table)
-
+        bar_png = fig_to_png_bytes(fig_bar)
+        rad_png = fig_to_png_bytes(fig_rad)
         pdf_buffer = io.BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=A4)
         W, H = A4
-
         # 제목
         c.setFont(FONT_NAME, 16)
-        c.drawString(40, H-60, "52문항 요인 평가 리포트 (ND 표준화)")
+        c.drawString(40, H-60, "52문항 요인 평가 리포트 (ND 표준화·내장판)")
+        # 요약(0–100)
         c.setFont(FONT_NAME, 10)
         y = H-90
-
-        # 요인별 0–100 점수 요약
         for name, val in subj_t_display.items():
             vtxt = "NaN" if pd.isna(val) else f"{val:.1f}"
             c.drawString(40, y, f"{name}: {vtxt}")
             y -= 14
             if y < 120:
                 c.showPage(); c.setFont(FONT_NAME, 10); y = H-60
-
-        # 프로파일 차트
-        c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "결과 프로파일 (T 40–90)")
-        if profile_png:
-            img1 = ImageReader(io.BytesIO(profile_png))
-            c.drawImage(img1, 40, 140, width=W-80, height=H-220, preserveAspectRatio=True, mask='auto')
-
-        # 해석표
-        c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "자동 해석 요약표")
-        if table_png:
-            img2 = ImageReader(io.BytesIO(table_png))
-            c.drawImage(img2, 40, 100, width=W-80, height=H-180, preserveAspectRatio=True, mask='auto')
-
+        # 자동 해석(심리학 용어)
+        for line in interp_lines:
+            c.drawString(40, y, line)
+            y -= 14
+            if y < 120:
+                c.showPage(); c.setFont(FONT_NAME, 10); y = H-60
+        # 바 차트
+        c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "요인 점수 (0–100)")
+        if bar_png:
+            img1 = ImageReader(io.BytesIO(bar_png))
+            c.drawImage(img1, 40, 200, width=W-80, height=H-300, preserveAspectRatio=True, mask='auto')
+        # 레이더
+        if rad_png:
+            c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "레이더 (0–100)")
+            img2 = ImageReader(io.BytesIO(rad_png))
+            c.drawImage(img2, 80, 180, width=W-160, height=H-320, preserveAspectRatio=True, mask='auto')
+        # 근접도
+        c.showPage(); c.setFont(FONT_NAME, 12); c.drawString(40, H-60, "임상군 근접도")
+        c.setFont(FONT_NAME, 10); y = H-90
+        for g in prox_df.index:
+            d = prox_df.loc[g, "Distance"]
+            s = prox_df.loc[g, "Similarity"]
+            d_txt = "NaN" if pd.isna(d) else f"{d:.3f}"
+            s_txt = "NaN" if pd.isna(s) else f"{s:.3f}"
+            c.drawString(40, y, f"{g}: 거리={d_txt}  유사도={s_txt}")
+            y -= 14
         c.save()
-        st.download_button("⬇️ PDF 다운로드", data=pdf_buffer.getvalue(),
-                           file_name=out_name, mime="application/pdf")
+        st.download_button("⬇️ PDF 다운로드", data=pdf_buffer.getvalue(), file_name="factor_report.pdf", mime="application/pdf")
     except Exception as e:
         st.error(f"PDF 생성 실패: {e}")
 
-# ---------------------------- 도움말 ----------------------------
-st.markdown(
-    """
-**메모**  
-- ND 기준/임상군 중심은 코드 상단 상수(`ND_BASE_MEAN`, `ND_BASE_STD`, `GROUP_CENTROIDS_Z`)를 실제 값으로 교체하세요.  
-- 프로파일 차트의 가로폭은 함수 내부 `width=680`에서 조절할 수 있습니다.  
-- PDF 한글을 위해 `fonts/NanumGothic.ttf` 포함을 권장합니다(없으면 시스템 기본 폰트로 대체).  
-"""
-)
